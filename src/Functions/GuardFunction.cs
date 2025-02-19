@@ -165,8 +165,7 @@ public class GuardFunction
       Successes = successesCollection.Select(_ => _?.State ?? 0).ToList()
     };
 
-    var options = new MemoryCacheEntryOptions().SetSlidingExpiration(TimeSpan.FromMinutes(5));
-    _cache.Set("Summary", result, options);
+    _cache.Set("Summary", result, new MemoryCacheEntryOptions().SetAbsoluteExpiration(TimeSpan.FromMinutes(5)));
     return new OkObjectResult(result);
   }
 
