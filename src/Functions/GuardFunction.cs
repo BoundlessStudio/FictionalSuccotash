@@ -2,36 +2,29 @@
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Azure.Functions.Worker;
-using Microsoft.Azure.WebJobs.Extensions.OpenApi.Core.Attributes;
+using Microsoft.DurableTask.Client;
+using Microsoft.DurableTask.Client.Entities;
+using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;
 using OpenAI.Chat;
 using System.Collections.Concurrent;
-using System.Net;
 
 namespace FictionalSuccotash.Functions;
 
 public class GuardFunction
 {
   private readonly ILogger<GuardFunction> _logger;
+  private readonly IMemoryCache _cache;
   private readonly ChatClient _client;
   private static readonly ConcurrentDictionary<string, List<Level>> _store = new ConcurrentDictionary<string, List<Level>>();
-  public GuardFunction(ILogger<GuardFunction> logger, ChatClient client)
+  public GuardFunction(ILogger<GuardFunction> logger, IMemoryCache cache, ChatClient client)
   {
     _logger = logger;
+    _cache = cache;
     _client = client;
   }
 
   [Function("Start")]
-  [OpenApiOperation(operationId: "Start",
-            Summary = "Starts a new game session",
-            Description = "Initializes a game session and returns a hint.")]
-  [OpenApiRequestBody("application/json", typeof(StartInputDto), Required = true,
-            Description = "Configuration for starting a new session, such as difficulty.")]
-  [OpenApiResponseWithBody(statusCode: HttpStatusCode.OK, contentType: "application/json",
-            bodyType: typeof(StartOutputDto),
-            Description = "Successfully started a new session, with a hint.")]
-  [OpenApiResponseWithoutBody(statusCode: HttpStatusCode.BadRequest,
-            Description = "Could not determine IP address or missing StartInputDto.")]
   public async Task<IActionResult> Start([HttpTrigger(AuthorizationLevel.Anonymous, "post")] HttpRequest req)
   {
     var ip = req.HttpContext?.Connection?.RemoteIpAddress?.ToString();
@@ -55,19 +48,7 @@ public class GuardFunction
   }
 
   [Function("Pin")]
-  [OpenApiOperation(operationId: "Pin" ,
-            Summary = "Verifies a level's security code",
-            Description = "Checks whether the provided code matches the level requirement.")]
-  [OpenApiRequestBody("application/json", typeof(PinInputDto), Required = true,
-            Description = "Level index and attempted code.")]
-  [OpenApiResponseWithBody(statusCode: HttpStatusCode.OK, contentType: "application/json",
-            bodyType: typeof(PinOutputDto),
-            Description = "Returns whether the pin was successful and if attempts exceeded the limit.")]
-  [OpenApiResponseWithoutBody(statusCode: HttpStatusCode.BadRequest,
-            Description = "IP address not determined or missing request DTO.")]
-  [OpenApiResponseWithoutBody(statusCode: HttpStatusCode.NotFound,
-            Description = "Either the session was not found or the level does not exist.")]
-  public async Task<IActionResult> Pin([HttpTrigger(AuthorizationLevel.Anonymous, "post")] HttpRequest req)
+  public async Task<IActionResult> Pin([HttpTrigger(AuthorizationLevel.Anonymous, "post")] HttpRequest req, [DurableClient] DurableTaskClient client)
   {
     var ip = req.HttpContext?.Connection?.RemoteIpAddress?.ToString();
     if (ip is null)
@@ -87,7 +68,11 @@ public class GuardFunction
     if (level is null)
       return new NotFoundObjectResult(new { message = "Unknown Level" });
 
+    await client.Entities.SignalEntityAsync(new(nameof(Counter), $"attempts-{dto.Level}"), "Increment");
+
     level.Success = level.Code == dto.Code;
+
+    if (level.Success) await client.Entities.SignalEntityAsync(new(nameof(Counter), $"successes-{dto.Level}"), "Increment");
 
     var result = new PinOutputDto()
     {
@@ -97,18 +82,6 @@ public class GuardFunction
   }
 
   [Function("Chat")]
-  [OpenApiOperation(operationId: "Chat",
-            Summary = "AI chat for a given level",
-            Description = "Submits a user prompt to an AI bot, guided by the specified level's instructions.")]
-  [OpenApiRequestBody("application/json", typeof(ChatInputDto), Required = true,
-            Description = "Includes the level index and the user prompt.")]
-  [OpenApiResponseWithBody(statusCode: HttpStatusCode.OK, contentType: "application/json",
-            bodyType: typeof(ChatOutputDto),
-            Description = "AI-generated response to the given prompt.")]
-  [OpenApiResponseWithoutBody(statusCode: HttpStatusCode.BadRequest,
-            Description = "IP address not determined or missing request DTO.")]
-  [OpenApiResponseWithoutBody(statusCode: HttpStatusCode.NotFound,
-            Description = "No active session found or invalid level specified.")]
   public async Task<IActionResult> Chat([HttpTrigger(AuthorizationLevel.Anonymous, "post")] HttpRequest req)
   {
     var ip = req.HttpContext?.Connection?.RemoteIpAddress?.ToString();
@@ -167,5 +140,34 @@ public class GuardFunction
     return new OkObjectResult(result);
   }
 
+  [Function("Summary")]
+  public async Task<IActionResult> Summary([HttpTrigger(AuthorizationLevel.Anonymous, "get")] HttpRequest req, [DurableClient] DurableTaskClient client)
+  {
+    if(_cache.TryGetValue("Summary", out SummaryDto? dto))
+    {
+      return new OkObjectResult(dto);
+    }
+
+    var attemptsTasks = new List<Task<EntityMetadata<int>?>>();
+    var successesTasks = new List<Task<EntityMetadata<int>?>>();
+    for (int i = 1; i <= 10; i++)
+    {
+      attemptsTasks.Add(client.Entities.GetEntityAsync<int>(new(nameof(Counter), $"attempts-{i}")));
+      successesTasks.Add(client.Entities.GetEntityAsync<int>(new(nameof(Counter), $"successes-{i}")));
+    }
+
+    var attemptsCollection = await Task.WhenAll(attemptsTasks);
+    var successesCollection = await Task.WhenAll(successesTasks);
+
+    var result = new SummaryDto()
+    {
+      Attempts = attemptsCollection.Select(_ => _?.State ?? 0).ToList(),
+      Successes = successesCollection.Select(_ => _?.State ?? 0).ToList()
+    };
+
+    var options = new MemoryCacheEntryOptions().SetSlidingExpiration(TimeSpan.FromMinutes(5));
+    _cache.Set("Summary", result, options);
+    return new OkObjectResult(result);
+  }
 
 }
