@@ -1,10 +1,10 @@
 using Microsoft.Azure.Functions.Worker.Builder;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
-using OpenAI.Chat;
+using OpenAI;
 
 var builder = FunctionsApplication.CreateBuilder(args);
 builder.ConfigureFunctionsWebApplication();
 builder.Services.AddMemoryCache();
-builder.Services.AddSingleton(new ChatClient("gpt-4o-mini", Environment.GetEnvironmentVariable("OPENAI_API_KEY")));
+builder.Services.AddSingleton(new OpenAIClient(Environment.GetEnvironmentVariable("OPENAI_API_KEY")));
 builder.Build().Run();

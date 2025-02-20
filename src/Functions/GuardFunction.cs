@@ -6,8 +6,10 @@ using Microsoft.DurableTask.Client;
 using Microsoft.DurableTask.Client.Entities;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;
+using OpenAI;
 using OpenAI.Chat;
 using System.Collections.Concurrent;
+using System.Runtime.CompilerServices;
 
 namespace FictionalSuccotash.Functions;
 
@@ -15,9 +17,9 @@ public class GuardFunction
 {
   private readonly ILogger<GuardFunction> _logger;
   private readonly IMemoryCache _cache;
-  private readonly ChatClient _client;
+  private readonly OpenAIClient _client;
   private static readonly ConcurrentDictionary<string, List<Level>> _store = new ConcurrentDictionary<string, List<Level>>();
-  public GuardFunction(ILogger<GuardFunction> logger, IMemoryCache cache, ChatClient client)
+  public GuardFunction(ILogger<GuardFunction> logger, IMemoryCache cache, OpenAIClient client)
   {
     _logger = logger;
     _cache = cache;
@@ -35,7 +37,8 @@ public class GuardFunction
     if (dto is null)
       return new BadRequestObjectResult(new { message = "Missing Dto" });
 
-    var levels = LevelGenerator.Generate(dto.Difficulty);
+    var levels = LevelGenerator.GenerateLevels(dto.Difficulty);
+    _store.TryRemove(ip, out List<Level>? existing);
     _store.TryAdd(ip, levels);
 
     _logger.LogInformation($"Starting new Session for {ip}.");
@@ -100,9 +103,10 @@ public class GuardFunction
     if (level is null)
       return new NotFoundObjectResult(new { message = "Unknown Level" });
 
+    var prompt = LevelGenerator.GetPrompt(dto.Level, level.Code);
     var messages = new List<ChatMessage>()
     {
-      ChatMessage.CreateSystemMessage(level.Prompt)
+      ChatMessage.CreateSystemMessage(prompt)
     };
     foreach (var msg in dto.Messages)
     {
@@ -125,7 +129,9 @@ public class GuardFunction
       MaxOutputTokenCount = 512,
     };
 
-    ChatCompletion response = await _client.CompleteChatAsync(messages, options);
+    var model = LevelGenerator.GetModel(dto.Level);
+    var chat = _client.GetChatClient(model);
+    ChatCompletion response = await chat.CompleteChatAsync(messages, options);
     var assistant = response?.Content.FirstOrDefault()?.Text ?? string.Empty;
 
     if (dto.Level == 9)
@@ -167,6 +173,22 @@ public class GuardFunction
 
     _cache.Set("Summary", result, new MemoryCacheEntryOptions().SetAbsoluteExpiration(TimeSpan.FromMinutes(5)));
     return new OkObjectResult(result);
+  }
+
+  [Function("Session")]
+  public IActionResult Session([HttpTrigger(AuthorizationLevel.Function, "get")] HttpRequest req)
+  {
+    var ip = req.HttpContext?.Connection?.RemoteIpAddress?.ToString();
+    if (ip is null)
+      return new BadRequestObjectResult(new { message = "Could not determine IP address." });
+
+    _store.TryGetValue(ip, out var levels);
+    if (levels is null)
+      return new NotFoundObjectResult(new { message = "No active session" });
+
+    var codes = levels.Select(l => l.Code).ToList();
+
+    return new OkObjectResult(codes);
   }
 
 }
