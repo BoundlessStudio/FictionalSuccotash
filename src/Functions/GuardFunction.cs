@@ -103,6 +103,7 @@ public class GuardFunction
     if (level is null)
       return new NotFoundObjectResult(new { message = "Unknown Level" });
 
+    var model = LevelGenerator.GetModel(dto.Level);
     var prompt = LevelGenerator.GetPrompt(dto.Level, level.Code);
     var messages = new List<ChatMessage>()
     {
@@ -129,7 +130,7 @@ public class GuardFunction
       MaxOutputTokenCount = 512,
     };
 
-    var model = LevelGenerator.GetModel(dto.Level);
+    
     var chat = _client.GetChatClient(model);
     ChatCompletion response = await chat.CompleteChatAsync(messages, options);
     var assistant = response?.Content.FirstOrDefault()?.Text ?? string.Empty;
