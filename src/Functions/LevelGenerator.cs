@@ -1,4 +1,4 @@
-﻿using FictionalSuccotash.Models;
+using FictionalSuccotash.Models;
 using NanoidDotNet;
 
 namespace FictionalSuccotash.Functions;
@@ -7,32 +7,7 @@ public static class LevelGenerator
 {
   public static string GetModel(int lvl)
   {
-    switch (lvl)
-    {
-      case 10:
-        return "gpt-4o";
-      case 9:
-        return "gpt-4o";
-      case 8:
-        return "gpt-4o";
-      case 7:
-        return "gpt-4o-mini";
-      case 6:
-        return "gpt-4o";
-      case 5:
-        return "gpt-4o";
-      case 4:
-        return "gpt-4o-mini";
-      case 3:
-        return "gpt-4o";
-      case 2:
-        return "gpt-4o-mini";
-      case 1:
-        return "gpt-4o-mini";
-      default:
-        return "gpt-4o-mini";
-
-    }
+    return "gpt-5.4-mini";
   }
 
   public static string GetPrompt(int lvl, string code)
